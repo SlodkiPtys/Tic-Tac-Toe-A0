@@ -464,9 +464,6 @@ def board_game_train_Q2(game_object, players_to_train, strategy_x=None, strategy
     strategy_o.to_file('Q_o.pkl')
     return strategy_x, strategy_o
 
-# Test of given game (game_object) and strategies for player x and o
-# choose_random - numbers of moves with puting x or o into random empty cell 
-# (odd numbers {1,3,5,7,9} for x, even numbers {2,4,6,8} for o):
 def board_game_test(game_object, strategy_x, strategy_o, number_of_games = 100, choose_random = []):
 
     num_win_x = 0
@@ -525,18 +522,9 @@ def board_game_test(game_object, strategy_x, strategy_o, number_of_games = 100, 
 
 def experiment_par_train():
     print("\nUCZENIE DWOCH STRATEGII JEDNOCZESNIE\n")
-    game = bfun.Tictactoe()                      # game class object
-    game = bfun.Tictac_general(4,4,3,False)
-    game = bfun.Tictac_general(10,10,4,False)
-    #game = bfun.Tictac_general(5,5,4,False)
-    #game = bfun.Connect4()
-    #game = bfun.Chess("szachy_plansza_3x3.txt")
-    #game = bfun.Chess("szachy_plansza_4x4.txt")
-    #game = bfun.Chess("szachy_plansza_5x5.txt")
-    #game = bfun.Chess("szachy_plansza_5x3_bez_kroli.txt")
-    #game = bfun.Chess("szachy_plansza_5x10.txt")
-    #game = bfun.Chess("szachy_plansza_standardowa.txt")
-    #game = bfun.Chess("szachy_plansza_14x14.txt")
+   # game = bfun.Tictactoe()                      # game class object
+   # game = bfun.Tictac_general(4,4,3,False)
+    game = bfun.Tictac_general(10,10,5,False)
 
     strategy_x, strategy_o = board_game_train_Q2(game,players_to_train = [1,2], number_of_games = 10)
 
@@ -606,15 +594,5 @@ def experiment_par_train():
 
     # play with o (black in chess) strategy:
     bgra.play_with_strategy(game_object = game, strategy = strategy_o, str_player=2)
-
-    # print("\nDouczanie strategii o na ustalonej strategii x, by sprawdzić")
-    # print("na ile uczenie równoczesne było skuteczne.\n")
-    # _, strategy_o_doucz = \
-    #     board_game_train_Q2(game,players_to_train = [2], strategy_x = strategy_x, number_of_games = 10000)
-    # strategy_o_doucz.to_file("strategy_o_doucz.txt",)
-    # print("test stategii douczanej o i uczonej x:")
-    # num_win_x, num_win_o, num_draws, Games, Rewards = board_game_test(game, strategy_x,strategy_o_doucz)
-    # game.print_test_to_file("gry_uczonej_X_z_douczana_O.txt",num_win_x, num_win_o, num_draws, Games, Rewards)
-
 
 experiment_par_train()
