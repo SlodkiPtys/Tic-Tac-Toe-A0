@@ -404,10 +404,10 @@ def board_game_train_Q2(game_object, players_to_train, strategy_x=None, strategy
                 else:                                   # using learned strategy with exploration
                     if if_softmax:
                         distrib = bfun.softmax((1/T)*Q_state_actions)
-                        action_nr = bfun.choose_action(distrib)   
+                        action_nr = bfun.choose_action(distrib)
                     elif (np.random.random() < epsylon) | (ind_Q_best == None):         # epsilon-greedy exploration
                         action_nr = np.random.randint(num_of_actions)  # next state random choose
-                    else: 
+                    else:
                         action_nr = ind_Q_best                         # next state optimal-known choose
                     
                             
@@ -588,11 +588,5 @@ def experiment_par_train():
     plt.savefig("test_Nash_o_strategy_random_x_strategy.png")
     plt.show()
     fig2 = plt
-
-    # play with x (white in chess) strategy:
-    #bgra.play_with_strategy(game_object = game, strategy = strategy_x, str_player=1)
-
-    # play with o (black in chess) strategy:
-    bgra.play_with_strategy(game_object = game, strategy = strategy_o, str_player=2)
 
 experiment_par_train()
