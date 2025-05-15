@@ -721,13 +721,8 @@ def play_with_strategy(game_object, strategy, str_player):
 	game_name = type(game_object).__name__
 	#class_name = "Interface_"+game_name
 	#eval("interface_class = "+class_name+"()")
-	if game_name == "Tictactoe":
-		interface_class = Interface_Tictactoe(game_object)
-	elif game_name == "Tictac_general":
-		interface_class = Interface_Tictac_general(game_object)
-	elif game_name == "Connect4":
-		interface_class = Interface_Connect4(game_object)
-	elif game_name == "Chess":
-		interface_class = Interface_Chess(game_object)
+
+	interface_class = Interface_Tictac_general(game_object) #load map
+
 	interface_class.play_with_strategy(game_object, strategy, str_player)
 	
