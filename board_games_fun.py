@@ -11,13 +11,9 @@ class Tictac_general:
 
     def initial_state(self):
         return np.zeros([self.num_of_rows,self.num_of_columns],dtype=int)
-
-    # quicker version of reward which takes into account only
-    # pieses in a vertical, horizontel and diagonal / \ sequences
-    # contained piece after current move 
     def __reward_after_move(self, A, row, column, player):
         R = 0
-        # horizontal direction:
+
         i = 0
         while True:
             if column + i + 1 < self.num_of_columns:
@@ -106,7 +102,6 @@ class Tictac_general:
         if (np.abs(_R) > 0)|(_number_of_moves >= self.num_of_rows*self.num_of_columns):
             return True
         else: return False
-
 
     # output: player, list of states after possible moves, rewards for moves
     def actions(self, A, player = 0):
