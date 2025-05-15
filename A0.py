@@ -12,10 +12,10 @@ class MCTSNode:
         self.parent = parent
         self.action_from_parent = action_from_parent
         self.children = []
-        self.N = 0              # visit count
-        self.W = 0.0            # total value
-        self.Q = 0.0            # mean value
-        self.P = 1.0            # prior probability
+        self.N = 0
+        self.W = 0.0
+        self.Q = 0.0
+        self.P = 1.0
 
     def expand(self, game_obj, player):
         actions = game_obj.actions(self.state, player)
@@ -76,12 +76,13 @@ class Strategy_MCTS:
         return best_idx, np.array(counts) / sum(counts)
 
     def choose_action(self, state, player):
-        idx, policy = self.simulate(state, player)
+        idx, _ = self.simulate(state, player)
         return idx
 
 # ---------- AlphaZero Neural Network ----------
-def build_alpha_zero_net(board_size, n_filters=64, n_res_blocks=3):
-    inputs = layers.Input(shape=(board_size, board_size, 2), name='board')
+# build network for arbitrary rows x cols board
+def build_alpha_zero_net(rows, cols, n_filters=64, n_res_blocks=3):
+    inputs = layers.Input(shape=(rows, cols, 2), name='board')
     x = layers.Conv2D(n_filters, 3, padding='same', activation='relu')(inputs)
     for _ in range(n_res_blocks):
         skip = x
@@ -91,7 +92,7 @@ def build_alpha_zero_net(board_size, n_filters=64, n_res_blocks=3):
         x = layers.Activation('relu')(x)
     p = layers.Conv2D(2, 1, activation='relu')(x)
     p = layers.Flatten()(p)
-    p = layers.Dense(board_size * board_size, activation='softmax', name='pi')(p)
+    p = layers.Dense(rows * cols, activation='softmax', name='pi')(p)
     v = layers.Conv2D(1, 1, activation='relu')(x)
     v = layers.Flatten()(v)
     v = layers.Dense(64, activation='relu')(v)
@@ -140,31 +141,51 @@ def train_alpha_zero(game, model, n_iterations=10, episodes_per_iter=20, sims_pe
         model.fit(X, {'pi': P, 'v': Z}, batch_size=64, epochs=1)
         model.save_weights(f"az_weights_iter{it}.h5")
 
-# ---------- Example usage in board_games.py ----------
-if __name__ == "__main__":
-    from board_games import TicTacToe, play_with_strategy
-    game = TicTacToe()
-    board_size = game.board_size
+# ---------- Utilities for generalized board ----------
+def state_to_tensor(self, state):
+    # two channels: X=1, O=2
+    return np.stack([state == 1, state == 2], axis=-1).astype(np.float32)
 
-    # Build model
-    model = build_alpha_zero_net(board_size)
+# monkey-patch into Tictac_general
+import board_games_fun as bfun
+bfun.Tictac_general.state_to_tensor = state_to_tensor
+
+# ---------- Main Execution ----------
+if __name__ == "__main__":
+    from board_graphical_interface import play_with_strategy
+    import board_games_fun as bfun
+
+    # generalized TicTacToe: 10x10, win in 5
+    game = bfun.Tictac_general(10, 10, 5, False)
+    rows, cols = game.num_of_rows, game.num_of_columns
+
+    # Build or load model
+    model = build_alpha_zero_net(rows, cols)
     weights_file = 'az_weights_latest.h5'
 
-    # If pretrained weights exist, load and start game; otherwise, train
     if os.path.exists(weights_file):
-        print("Loading existing model weights...")
+        print("Loading existing AlphaZero model weights...")
         model.load_weights(weights_file)
     else:
-        print("No existing model found. Training from scratch...")
-        train_alpha_zero(game, model,
-                         n_iterations=5,
-                         episodes_per_iter=10,
-                         sims_per_move=50)
-        model.save_weights(weights_file)
+        print("No saved model found. Training AlphaZero from scratch...")
 
-    # Play against human using MCTS+NN
+    # Always train self-play
+    train_alpha_zero(
+        game,
+        model,
+        n_iterations=5,
+        episodes_per_iter=20,
+        sims_per_move=200
+    )
+    model.save_weights(weights_file)
+
+    # Start human-vs-AI game
     play_with_strategy(
         game,
-        strategy=lambda s, p: Strategy_MCTS(game, n_simulations=200, model=model).choose_action(s, p),
+        strategy=lambda state, player: Strategy_MCTS(
+            game_obj=game,
+            n_simulations=200,
+            model=model
+        ).choose_action(state, player),
         human_player=2
     )
