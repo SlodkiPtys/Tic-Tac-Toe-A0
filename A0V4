@@ -1,0 +1,258 @@
+import os
+import math
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+import pygame
+import board_games_fun as bfun  # game definitions
+from board_graphical_interface import play_with_strategy
+
+# -----------------------------------------------------------------------------
+# INITIAL SETUP
+# -----------------------------------------------------------------------------
+pygame.init()
+
+def state_to_tensor_pov(state, player):
+    """Convert board state to model input tensor from the current player's perspective."""
+    return np.stack([state == player,
+                     state == (3 - player)], axis=-1).astype(np.float32)
+
+# -----------------------------------------------------------------------------
+# Potential-based reward shaping
+# -----------------------------------------------------------------------------
+def shaped_reward(game, old_state, new_state, player, base_reward, coef=0.1):
+    """Compute reward with potential shaping based on longest line growth."""
+    def longest_line(s, p):
+        R, C = s.shape
+        best = 0
+        dirs = [(0,1), (1,0), (1,1), (1,-1)]
+        for dr, dc in dirs:
+            for r in range(R):
+                for c in range(C):
+                    cnt = 0
+                    rr, cc = r, c
+                    while 0 <= rr < R and 0 <= cc < C and s[rr, cc] == p:
+                        cnt += 1
+                        rr += dr; cc += dc
+                    best = max(best, cnt)
+        # normalize by board max dimension
+        return best / max(R, C)
+
+    old_pot = longest_line(old_state, player)
+    new_pot = longest_line(new_state, player)
+    return base_reward + coef * (new_pot - old_pot)
+
+# -----------------------------------------------------------------------------
+# Minimax for hard mode (nearly unbeatable)
+# -----------------------------------------------------------------------------
+class Strategy_Minimax:
+    def __init__(self, game, max_depth=8):
+        self.game = game
+        self.max_depth = max_depth
+
+    def evaluate(self, state):
+        if self.game.end_of_game(1, 0, state, None):
+            return 1
+        if self.game.end_of_game(2, 0, state, None):
+            return -1
+        return 0
+
+    def negamax(self, state, player, depth, alpha, beta):
+        val = self.evaluate(state)
+        if val != 0 or depth == 0:
+            return val * (1 if player == 1 else -1)
+        max_val = -math.inf
+        for a in self.game.actions(state, player):
+            ns, _ = self.game.next_state_and_reward(player, state, a)
+            score = -self.negamax(ns, 3-player, depth-1, -beta, -alpha)
+            max_val = max(max_val, score)
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break
+        return max_val
+
+    def choose_action(self, state, player):
+        best_score = -math.inf
+        best_act = None
+        for a in self.game.actions(state, player):
+            ns, _ = self.game.next_state_and_reward(player, state, a)
+            score = -self.negamax(ns, 3-player, self.max_depth-1, -math.inf, math.inf)
+            if score > best_score:
+                best_score, best_act = score, a
+        idx = self.game.action_index(best_act)
+        policy = np.zeros(self.game.num_of_rows * self.game.num_of_columns)
+        policy[idx] = 1.0
+        return idx, policy
+
+# -----------------------------------------------------------------------------
+# MCTS node class
+# -----------------------------------------------------------------------------
+class MCTSNode:
+    def __init__(self, state, player, prior, parent=None, action_idx=None):
+        self.state = state
+        self.player = player
+        self.P = prior
+        self.parent = parent
+        self.action_idx = action_idx
+        self.children = []
+        self.N = 0.0
+        self.W = 0.0
+
+    def expand(self, game, priors):
+        actions = game.actions(self.state, self.player)
+        for idx, (a, p) in enumerate(zip(actions, priors)):
+            ns, _ = game.next_state_and_reward(self.player, self.state, a)
+            child = MCTSNode(ns, 3-self.player, p, parent=self, action_idx=idx)
+            self.children.append(child)
+
+    def is_leaf(self):
+        return not self.children
+
+# -----------------------------------------------------------------------------
+# AlphaZero strategy: MCTS + neural policy-value
+# -----------------------------------------------------------------------------
+class Strategy_AlphaZero:
+    def __init__(self, game, model, n_simulations=200, c_puct=1.0, temp=0.5):
+        self.game = game
+        self.model = model
+        self.n_sim = n_simulations
+        self.c_puct = c_puct
+        self.temp = temp
+        self.bs = game.num_of_rows * game.num_of_columns
+
+    def _predict(self, state, player):
+        x = state_to_tensor_pov(state, player)[None]
+        pi, v = self.model.predict(x, verbose=0)
+        return pi.ravel(), float(v)
+
+    def simulate(self, root):
+        node = root
+        # Selection
+        while not node.is_leaf():
+            total_N = sum(child.N for child in node.children)
+            node = max(
+                node.children,
+                key=lambda c: (c.W / c.N if c.N > 0 else 0)
+                                + self.c_puct * c.P * math.sqrt(total_N) / (1 + c.N)
+            )
+        # Expansion & evaluation
+        pi, v = self._predict(node.state, node.player)
+        node.expand(self.game, pi)
+        # Backpropagation
+        value = v if node.player == 1 else -v
+        cur = node
+        while cur:
+            cur.N += 1
+            cur.W += value
+            value = -value
+            cur = cur.parent
+
+    def choose_action(self, state, player):
+        pi, _ = self._predict(state, player)
+        root = MCTSNode(state, player, prior=1.0)
+        root.expand(self.game, pi)
+        for _ in range(self.n_sim):
+            self.simulate(root)
+
+        visits = np.array([child.N for child in root.children])
+        if self.temp == 0:
+            idx = int(visits.argmax())
+        else:
+            probs = visits ** (1 / self.temp)
+            probs /= probs.sum()
+            idx = int(np.random.choice(len(probs), p=probs))
+
+        policy = np.zeros(self.bs)
+        policy[root.children[idx].action_idx] = 1.0
+        return root.children[idx].action_idx, policy
+
+# -----------------------------------------------------------------------------
+# Neural network builder
+# -----------------------------------------------------------------------------
+def build_alpha_zero_net(rows, cols, filters=64, blocks=5):
+    inp = layers.Input((rows, cols, 2))
+    x = layers.Conv2D(filters, 3, padding='same', activation='relu')(inp)
+    for _ in range(blocks):
+        residual = x
+        x = layers.Conv2D(filters, 3, padding='same', activation='relu')(x)
+        x = layers.Conv2D(filters, 3, padding='same')(x)
+        x = layers.Add()([residual, x])
+        x = layers.Activation('relu')(x)
+    p = layers.Conv2D(2, 1, activation='relu')(x)
+    p = layers.Flatten()(p)
+    p = layers.Dense(rows * cols, activation='softmax', name='pi')(p)
+    v = layers.Conv2D(1, 1, activation='relu')(x)
+    v = layers.Flatten()(v)
+    v = layers.Dense(64, activation='relu')(v)
+    v = layers.Dense(1, activation='tanh', name='v')(v)
+    model = models.Model(inp, [p, v])
+    model.compile(
+        optimizer=optimizers.Adam(1e-3),
+        loss={'pi': 'categorical_crossentropy', 'v': 'mse'}
+    )
+    return model
+
+# -----------------------------------------------------------------------------
+# Self-play & training
+# -----------------------------------------------------------------------------
+def self_play(game, model, sims):
+    strat = Strategy_AlphaZero(game, model, n_simulations=sims)
+    X, P, Z = [], [], []
+    player = 1
+    state = game.initial_state()
+    while True:
+        old_state = state.copy()
+        idx, policy = strat.choose_action(state, player)
+        action = game.actions(state, player)[idx]
+        state, base_r = game.next_state_and_reward(player, state, action)
+        reward = shaped_reward(game, old_state, state, player, base_r)
+        X.append(state_to_tensor_pov(old_state, player))
+        P.append(policy)
+        Z.append(reward if player == 1 else -reward)
+        if game.end_of_game(base_r, 0, state, None):
+            break
+        player = 3 - player
+    return X, P, Z
+
+
+def train(game, model, iters=30, episodes=200, sims=200):
+    for it in range(1, iters + 1):
+        print(f"Iteration {it}/{iters}")
+        X, P, Z = [], [], []
+        for _ in range(episodes):
+            x_batch, p_batch, z_batch = self_play(game, model, sims)
+            X.extend(x_batch)
+            P.extend(p_batch)
+            Z.extend(z_batch)
+        X = np.stack(X)
+        P = np.stack(P)
+        Z = np.array(Z)
+        model.fit(X, {'pi': P, 'v': Z}, batch_size=64, epochs=1, verbose=1)
+    model.save_weights('az.weights.h5')
+
+# -----------------------------------------------------------------------------
+# MAIN ENTRY: train or play
+# -----------------------------------------------------------------------------
+if __name__ == '__main__':
+    game = bfun.Tictac_general(10, 10, 5, False)
+    rows, cols = game.num_of_rows, game.num_of_columns
+    model = build_alpha_zero_net(rows, cols)
+
+    # Load or train
+    if os.path.exists('az.weights.h5'):
+        model.load_weights('az.weights.h5')
+    else:
+        print("Training AlphaZero bot...")
+        train(game, model)
+
+    # Choose difficulty
+    mode = input("Choose mode [easy/medium/hard]: ").strip().lower()
+    if mode == 'easy':
+        strat = Strategy_AlphaZero(game, model, n_simulations=20, c_puct=0.5, temp=1.0)
+    elif mode == 'medium':
+        strat = Strategy_AlphaZero(game, model, n_simulations=100, c_puct=1.0, temp=0.5)
+    else:
+        strat = Strategy_Minimax(game, max_depth=8)
+
+    print("You are X (player 2). Good luck!")
+    play_with_strategy(game, strat, str_player=2)
